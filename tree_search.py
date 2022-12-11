@@ -3,33 +3,29 @@ import matplotlib.pyplot as plt
 
 
 def create_tree(depth):
-    """Create binary tree of given depth."""
+    """
+    Create binary tree of given depth.
+    Nodes are named with ints incrementing from 1 up.
+    """
     assert depth >= 1
     G = nx.Graph()
+    # we can store whatever attributes we want (e.g. "address")
+    G.add_node(1, address="")
+    last_node = 1  # name of last node created
 
-    G.add_node(1)
-    last_node = 1
-    # prev_start, prev_count = (1, 1)  # first node name, num nodes (in prev row)
     for d in range(1, depth):
-
         prev_row_size = 2 ** (d - 1)
         prev_row_start = last_node - prev_row_size + 1
-        # total_nodes = 1 + 2**d
 
-        # add 2 children to each node in previous row
         prev_row = list(range(prev_row_start, last_node + 1))
-        # print(f"\n d={d}, prev row")
-        # print(prev_row)
-        # for n in prev_row:
-        for n in prev_row:
+        for n in prev_row:  # add 2 children to each node in previous row
+            G.add_node(last_node + 1, address=G.nodes[n]["address"] + "L")
+            G.add_node(last_node + 2, address=G.nodes[n]["address"] + "R")
             G.add_edge(n, last_node + 1)
             G.add_edge(n, last_node + 2)
             last_node += 2
             # nx.draw(G, with_labels=True, node_size=300)
             # plt.show()
-
-        # prev_count = last_node - (prev_start + prev_count + 1)
-        # prev_start = last_node
     return G
 
 
@@ -39,6 +35,7 @@ def edit_distance(add1: str, add2: str) -> int:
 
 
 if __name__ == "__main__":
+    depth = 4
     tree = create_tree(4)
     # print(tree)
     print("\ntree:")
@@ -47,3 +44,6 @@ if __name__ == "__main__":
 
     nx.draw(tree, with_labels=True, node_size=300)
     plt.show()
+
+    first_leaf_node = tree.number_of_nodes() - 2 ** (depth - 1) + 1
+    leaf_node_names = list(range(first_leaf_node, tree.number_of_nodes() + 1))
