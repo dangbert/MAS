@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import random
-from typing import List
+from typing import List, Union
 
 STATS_TEMPLATE = {"vals": []}
 
@@ -14,6 +14,7 @@ class MCTS:
     c: float
     B: int
     target_name: int
+    global_root: int  # name of tree's root node
 
     def __init__(self, depth: int, c=2, B: float = 25, draw: bool = False):
         """
@@ -35,6 +36,7 @@ class MCTS:
         # we can store whatever attributes we want (e.g. "address")
         tree.add_node(1, address="")
         last_node = 1  # name of last node created
+        self.global_root = last_node
 
         for d in range(1, depth):
             prev_row_size = 2 ** (d - 1)
@@ -90,9 +92,27 @@ class MCTS:
         RUN Monte Carlo Tree search algorithm.
         TODO: add budget params
         """
-        cur_root = 1
-        # init stats for node
-        self.tree.nodes[cur_root]["stats"] = deepcopy(STATS_TEMPLATE)
+        cur_root = self.global_root
+
+        # continue until we reach a leaf node
+        while len(self.get_child_names(cur_root)) > 1:
+            # init stats for node
+            self.tree.nodes[cur_root]["stats"] = deepcopy(STATS_TEMPLATE)
+
+            node = self.selection(cur_root)
+            self.expansion(node)
+
+            #
+
+            # after computation budget expanded, make a final move to descend to child with highest number of simulations
+            # cur_root = self.selection(cur_root)
+
+    def selection(self, root_node: int) -> int:
+        """
+        Suggests which child of a given node should be returned.
+        Selection is based on 2 things: how good are the stats, and how much a child node has been ignored.
+        """
+        children = self.get_child_names(root_node)
 
     def expansion(self, root_node: int):
         """Explores a new child of root_node?"""
@@ -104,18 +124,14 @@ class MCTS:
         cur = random.choice(unex_children)
 
         self.tree.nodes[cur]["stats"] = deepcopy(STATS_TEMPLATE)
-        self.tree.nodes[cur]["stats"]["vals"].append(self.simulate(cur))
+        self.update(cur, self.simulate(cur))
 
-    def selection(self, root_node: int) -> int:
-        """
-        Suggests which child of a given node should be returned.
-        Selection is based on 2 things: how good are the stats, and how much a child node has been ignored.
-        """
-        pass
-
-    def update(self, root_node: int):
-        """"""
-        pass
+    def update(self, node: int, value: float):
+        """Update the stats of a given node (and its parents as well) using a given simulation result."""
+        self.tree.nodes[node]["stats"]["vals"].append(value)
+        parent = self.get_parent_name(node)
+        if parent is not None:
+            self.update(parent, value)
 
     def simulate(self, node_name: int) -> float:
         """Simulate random search from given node and return the leaf value it reaches."""
@@ -125,15 +141,24 @@ class MCTS:
         # continue random search
         return self.simulate(random.choice(child_nodes))
 
-    @staticmethod
-    def edit_distance(add1: str, add2: str) -> int:
-        assert len(add1) == len(add2)
-        return sum([int(a1 != a2) for a1, a2 in zip(add1, add2)])
-
     def get_child_names(self, node_name: int) -> List[int]:
         """Returns list of names of child nodes of the provided node e.g. [2, 3]"""
         node_names = [name for _, name in self.tree.edges(node_name)]
         return list(filter(lambda n: n > node_name, node_names))
+
+    def get_parent_name(self, node_name: int) -> Union[int, None]:
+        """Returns name of parent node (or None) if there's no parent."""
+        node_names = [name for _, name in self.tree.edges(node_name)]
+        parents = list(filter(lambda n: n < node_name, node_names))
+        if len(parents) == 0:
+            return None
+        assert len(parents) == 1
+        return parents[0]
+
+    @staticmethod
+    def edit_distance(add1: str, add2: str) -> int:
+        assert len(add1) == len(add2)
+        return sum([int(a1 != a2) for a1, a2 in zip(add1, add2)])
 
 
 if __name__ == "__main__":
