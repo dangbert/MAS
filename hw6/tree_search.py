@@ -2,7 +2,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 
 
-def create_tree(depth):
+def create_tree(depth, draw=False):
     """
     Create binary tree of given depth.
     Nodes are named with ints incrementing from 1 up.
@@ -24,8 +24,9 @@ def create_tree(depth):
             G.add_edge(n, last_node + 1)
             G.add_edge(n, last_node + 2)
             last_node += 2
-            # nx.draw(G, with_labels=True, node_size=300)
-            # plt.show()
+    if draw:
+        nx.draw(G, with_labels=True, node_size=300)
+        plt.show()
     return G
 
 
