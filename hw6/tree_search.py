@@ -1,3 +1,4 @@
+import argparse
 from copy import deepcopy
 import math
 import matplotlib.pyplot as plt
@@ -5,23 +6,38 @@ import networkx as nx
 import numpy as np
 import random
 from typing import List, Union, Optional
+import logging
 import pdb
 
+logger = logging.getLogger(__name__)
+
+# we simply store a list of (payoff) values for each node
+#   (where the length tracks the number of visits)
 STATS_TEMPLATE = {"vals": []}
 
 # max number of iterations starting at a given root node
 MAX_ITERATIONS = 20
 
 # max number of rollouts from a given "snowcap" leaf node
-MAX_ROLLOUTS = 5
+MAX_ROLLOUTS = 10
 
-EXPANSION_PROB = 0.3
+EXPANSION_PROB = 0.5
+
+
+def avg(arr: List) -> float:
+    return sum(arr) / len(arr)
 
 
 class MCTS:
     """
     Performs monte carlo tree search on a binary tree with varying values stored in the leaf nodes.
     Based on p. 185 in Textbook.
+
+    In this case, our search tree exists from the start and never increases in size
+    (but stats get stored in each node).
+    In a more typical implementation, you'd build a tree from scratch as you traverse the space of possible actions from the initial state (node).
+
+    Here a "snowcap" leaf node is not necessarily a terminal node in self.tree, but a leaf node in the search subtree of self.tree
     """
 
     tree: nx.Graph
@@ -36,7 +52,7 @@ class MCTS:
         Nodes are named with ints incrementing from 1 up.
 
         :param depth: depth of tree to create
-        :param B: param for computing values of leaf ndoes
+        :param B: param for computing values of leaf (terminal) nodes
         :param c: hyperparam for UCB calculation
         """
         self.c = c
@@ -108,19 +124,21 @@ class MCTS:
         Returns a trajectory (list of node names) from the root of the tree to a leaf node.
         Note that we identify nodes in our search (sub)tree by the presence of "stats".
         """
-        trajectory = []
         cur_root = self.global_root
+        trajectory = [cur_root]
 
-        # continue until cur_root is a leaf node
+        # continue until cur_root is a leaf (terminal) node
         while len(self.get_child_names(cur_root)) > 1:
             # print(f"\nreached root {cur_root}")
-            trajectory.append(cur_root)
 
-            # init stats for node
-            self.tree.nodes[cur_root]["stats"] = deepcopy(STATS_TEMPLATE)
+            if "stats" not in self.tree.nodes[cur_root]:
+                # init stats for node
+                self.tree.nodes[cur_root]["stats"] = deepcopy(STATS_TEMPLATE)
 
             for i in range(MAX_ITERATIONS):
-                print(f"\nroot {cur_root}, iteration {i}")
+                logger.debug(
+                    f"root {cur_root}, iteration {i} (cur_root = {cur_root})\n"
+                )
                 node = self.selection(cur_root)
                 expand = random.random() <= EXPANSION_PROB or node is None
                 if node is None:
@@ -131,50 +149,62 @@ class MCTS:
                 # on some iterations, the tree is expanded from the selected leaf node
                 #   by adding one or more child nodes reached from the selected node via unexplored actions.
                 if expand:
-                    print(f"expanding from node {node}")
+                    logger.debug(f"expanding from node {node}\n")
                     node = self.expansion(node)
 
-                print(f"simulating from node {node}...")
+                logger.debug(f"simulating from node {node}...\n")
                 assert node is not None
                 # simulate random searches from node until a leaf node is reached
                 vals = [self.simulate(node) for _ in range(MAX_ROLLOUTS)]
 
-                print("updating stats...")
+                logger.debug("updating stats...")
                 # update stats starting at node (backing up all the way to cur_root)
                 self.update(node, vals, cur_root)
 
-            # after computation budget expanded, make a final move to descend to child with highest number of simulations
+            # after computation budget expanded, make a final move to descend to a child.
             #   this can be based on the "action having the largest action value", or the most visited node (to avoid outliers).
+            # TODO: could we use UCB here?
             rel_children = [
-                self.tree.nodes[n]
+                n
                 for n in self.get_child_names(cur_root)
                 if "stats" in self.tree.nodes[n]
             ]
             cur_root = max(
                 rel_children,
-                key=lambda cn: len(cn["stats"]["vals"]),
+                key=lambda c: len(self.tree.nodes[c]["stats"]["vals"]),
             )
+            trajectory.append(cur_root)
+            logger.info(f"moving to new root {cur_root}, trajectory = {trajectory}")
+        return trajectory
 
-    def selection(self, root_node: int) -> Optional[int]:
+    def selection(self, node: int) -> int:
         """
         Starts at root_node, applies a 'tree policy' to select a "snowcap" leaf node.
 
         Suggests which child of a given node should be returned.
         Selection is based on 2 things: how good are the stats, and how much a child node has been ignored.
+        The UCB formula weights these factors.
         """
-        children = self.get_child_names(root_node)
-        ex_children = [c for c in children if "stats" in self.tree.nodes[c]]
-        if len(ex_children) == 0:
-            return None
-        return random.choice(ex_children)  # for now
+        children = self.get_child_names(node)
+        # find relevant children (those that have been visited before)
+        rel_children = [c for c in children if "stats" in self.tree.nodes[c]]
+        if len(rel_children) == 0:
+            return node  # if no children have been visited, then select root_node
 
-        # TODO: figure out how to implement and run experiment
-        # probably need to recurse?
+        parent_visits = len(self.tree.nodes[node]["stats"]["vals"])
+        ucb_scores = {}
+        for c in rel_children:
+            stats = self.tree.nodes[c]["stats"]
+            ucb_scores[c] = avg(stats["vals"]) + self.c * math.sqrt(
+                math.log(parent_visits) / len(stats["vals"])
+            )
+
+        return self.selection(max(rel_children, key=lambda c: ucb_scores[c]))
 
     def expansion(self, node: int) -> Optional[int]:
-        """Expands the search tree, from the given "snowcap" leaf node, identifying a new child to explore.
-        If all children have been explored, returns node as backup.
-        ^TODO: ensure selection() traverses recursively to depth of "search tree" so node is snowcap leaf
+        """
+        Expands the search tree, from the given "snowcap" leaf node, randomly picking a new child to explore.
+        If all children have been explored, returns node as fallback.
         """
         children = self.get_child_names(node)
         unex_children = [c for c in children if "stats" not in self.tree.nodes[c]]
@@ -184,15 +214,14 @@ class MCTS:
         cur = random.choice(unex_children)
         self.tree.nodes[cur]["stats"] = deepcopy(STATS_TEMPLATE)
         return cur
-        # self.update(cur, self.simulate(cur))
 
-    def simulate(self, node_name: int) -> float:
-        """Simulate random search from given node and return the leaf value it reaches."""
-        print(f"in simulate node_name = {node_name}")
-        assert type(node_name) == int
-        child_nodes = self.get_child_names(node_name)
+    def simulate(self, node: int) -> float:
+        """Simulate random search from given node and return the (terminal) leaf value it reaches."""
+        logger.debug(f"in simulate node_name = {node}")
+        assert type(node) == int
+        child_nodes = self.get_child_names(node)
         if len(child_nodes) == 0:
-            return self.tree.nodes[node_name]["value"]
+            return self.tree.nodes[node]["value"]
         # continue random search
         return self.simulate(random.choice(child_nodes))
 
@@ -200,33 +229,26 @@ class MCTS:
         """
         Updates the stats of a given node (and its parents as well) using a given simulation result.
         Stops updating when cur_root is reached.
+        :param: values list of values to append to stats
         """
-        print(f"updating node: {node}")
-        try:
-            self.tree.nodes[node]["stats"]["vals"].extend(values)
-        except KeyError as err:
-            import pdb
-
-            pdb.set_trace()
-            print(err)
+        logger.debug(f"updating node: {node} with values {values}")
+        self.tree.nodes[node]["stats"]["vals"].extend(values)
+        if node == cur_root:
+            return
         parent = self.get_parent_name(node)
-        if parent is not None and parent != cur_root:
-            # we'll just add the results to the parent as well
+        if parent is not None:
+            # update the results to the parent as well
             self.update(parent, values, cur_root)
 
-    def get_child_names(self, node_name: int) -> List[int]:
+    def get_child_names(self, node: int) -> List[int]:
         """Returns list of names of child nodes of the provided node e.g. [2, 3]"""
-        node_names = [name for _, name in self.tree.edges(node_name)]
-        print("node_name = ")
-        print(node_name)
-        print("node_names = ")
-        print(node_names)
-        return list(filter(lambda n: n > node_name, node_names))
+        node_names = [name for _, name in self.tree.edges(node)]
+        return list(filter(lambda n: n > node, node_names))
 
-    def get_parent_name(self, node_name: int) -> Union[int, None]:
+    def get_parent_name(self, node: int) -> Union[int, None]:
         """Returns name of parent node (or None) if there's no parent."""
-        node_names = [name for _, name in self.tree.edges(node_name)]
-        parents = list(filter(lambda n: n < node_name, node_names))
+        node_names = [name for _, name in self.tree.edges(node)]
+        parents = list(filter(lambda n: n < node, node_names))
         if len(parents) == 0:
             return None
         assert len(parents) == 1
@@ -239,13 +261,31 @@ class MCTS:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run tree search.")
+    parser.add_argument(
+        "-d", "--debug", action="store_true", help="enable debug logging"
+    )
+    args = parser.parse_args()
+
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    FORMAT = "[%(filename)s:%(lineno)s - %(funcName)15s() ] %(message)s"
+    logger.setLevel(log_level)
+    sh = logging.StreamHandler()
+    sh.setLevel(log_level)
+    sh.setFormatter(logging.Formatter(FORMAT))
+    logger.addHandler(sh)
+
+    # logging.basicConfig(format=FORMAT, level=log_level)
+
     depth = 4
-    mc = MCTS(depth, draw=True)
-    res = mc.simulate(1)
+    mc = MCTS(depth, draw=False)
+    # res = mc.simulate(1)
 
     tra = mc.run()
     print(f"returned trajectory: ")
     print(tra)
+    value = mc.tree.nodes[tra[-1]]["value"]
+    print(f"value of trajectory terminal node: {value}")
     pdb.set_trace()
 
     exit(0)
@@ -260,7 +300,3 @@ if __name__ == "__main__":
 
     first_leaf_node = tree.number_of_nodes() - 2 ** (depth - 1) + 1
     leaf_node_names = list(range(first_leaf_node, tree.number_of_nodes() + 1))
-
-
-def avg(arr: List) -> float:
-    return sum(arr) / len(arr)
