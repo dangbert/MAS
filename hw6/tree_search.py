@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 from copy import deepcopy
 import math
@@ -19,7 +20,7 @@ STATS_TEMPLATE = {"vals": []}
 MAX_ITERATIONS = 20
 
 # max number of rollouts from a given "snowcap" leaf node
-MAX_ROLLOUTS = 10
+MAX_ROLLOUTS = 5
 
 EXPANSION_PROB = 0.5
 
@@ -62,6 +63,7 @@ class MCTS:
 
     def reset(self, depth: int, draw: bool = False):
         assert depth >= 1
+        logger.info(f"creating tree with depth {depth}")
         tree = nx.Graph()
         # we can store whatever attributes we want (e.g. "address")
         tree.add_node(1, address="")
@@ -82,6 +84,8 @@ class MCTS:
         if draw:
             nx.draw(tree, with_labels=True, node_size=300)
             plt.show()
+            plt.savefig("graph.pdf", dpi=400)
+            print("wrote graph.pdf")
 
         # now pick a target (leaf node) and assign values to all leaf nodes
         first_leaf_node = tree.number_of_nodes() - 2 ** (depth - 1) + 1
@@ -107,6 +111,7 @@ class MCTS:
             f"target node = #{self.target_name} (value {target_value:.3f}), num leaf nodes = {len(leaf_node_names)}, max distance: {dmax}, min distance: {min(dists)}"
         )
 
+        plt.clf()
         plt.xlabel("leaf node name")
         plt.ylabel("node value")
         plt.title(
@@ -115,6 +120,8 @@ class MCTS:
         plt.plot(leaf_node_names, leaf_vals)
         if draw:
             plt.show()
+        plt.savefig("leaves.pdf", dpi=400)
+        print("wrote leaves.pdf")
 
         self.tree = tree
 
@@ -132,15 +139,16 @@ class MCTS:
             # print(f"\nreached root {cur_root}")
 
             if "stats" not in self.tree.nodes[cur_root]:
-                # init stats for node
+                # init stats for node, mark as part of snowcap
                 self.tree.nodes[cur_root]["stats"] = deepcopy(STATS_TEMPLATE)
+                self.tree.nodes[cur_root]["snowcap"] = True
 
             for i in range(MAX_ITERATIONS):
                 logger.debug(
                     f"root {cur_root}, iteration {i} (cur_root = {cur_root})\n"
                 )
                 node = self.selection(cur_root)
-                expand = random.random() <= EXPANSION_PROB or node is None
+                expand = random.random() <= EXPANSION_PROB or node == cur_root
                 if node is None:
                     # initial condition
                     expand = True
@@ -169,12 +177,18 @@ class MCTS:
                 for n in self.get_child_names(cur_root)
                 if "stats" in self.tree.nodes[n]
             ]
+            nodes = self.tree.nodes
             cur_root = max(
                 rel_children,
-                key=lambda c: len(self.tree.nodes[c]["stats"]["vals"]),
+                key=lambda c: nodes[c]["value"] if "value" in nodes[c]
+                # else len(nodes[c]["stats"]["vals"]),
+                else avg(nodes[c]["stats"]["vals"]),
             )
             trajectory.append(cur_root)
-            logger.info(f"moving to new root {cur_root}, trajectory = {trajectory}")
+            logger.info(
+                f"moving to new root {cur_root} ({len(rel_children)} children considered), trajectory = {trajectory}"
+            )
+            print()
         return trajectory
 
     def selection(self, node: int) -> int:
@@ -187,7 +201,7 @@ class MCTS:
         """
         children = self.get_child_names(node)
         # find relevant children (those that have been visited before)
-        rel_children = [c for c in children if "stats" in self.tree.nodes[c]]
+        rel_children = [c for c in children if "snowcap" in self.tree.nodes[c]]
         if len(rel_children) == 0:
             return node  # if no children have been visited, then select root_node
 
@@ -207,8 +221,9 @@ class MCTS:
         If all children have been explored, returns node as fallback.
         """
         children = self.get_child_names(node)
-        unex_children = [c for c in children if "stats" not in self.tree.nodes[c]]
+        unex_children = [c for c in children if "snowcap" not in self.tree.nodes[c]]
         if len(unex_children) == 0:
+            logger.warn(f"unable to expand node {node} (children also in snowcap)")
             return node
 
         cur = random.choice(unex_children)
@@ -217,7 +232,7 @@ class MCTS:
 
     def simulate(self, node: int) -> float:
         """Simulate random search from given node and return the (terminal) leaf value it reaches."""
-        logger.debug(f"in simulate node_name = {node}")
+        # logger.debug(f"in simulate node_name = {node}")
         assert type(node) == int
         child_nodes = self.get_child_names(node)
         if len(child_nodes) == 0:
@@ -231,7 +246,9 @@ class MCTS:
         Stops updating when cur_root is reached.
         :param: values list of values to append to stats
         """
-        logger.debug(f"updating node: {node} with values {values}")
+        logger.debug(
+            f"updating node: {node} with ({len(values)}) values (avg {avg(values):.3f})"
+        )
         self.tree.nodes[node]["stats"]["vals"].extend(values)
         if node == cur_root:
             return
@@ -262,13 +279,12 @@ class MCTS:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run tree search.")
-    parser.add_argument(
-        "-d", "--debug", action="store_true", help="enable debug logging"
-    )
+    parser.add_argument("--depth", type=int, help="depth of tree to create", default=20)
+    parser.add_argument("--debug", action="store_true", help="enable debug logging")
     args = parser.parse_args()
 
     log_level = logging.DEBUG if args.debug else logging.INFO
-    FORMAT = "[%(filename)s:%(lineno)s - %(funcName)15s() ] %(message)s"
+    FORMAT = "[%(levelname)5s][%(filename)s:%(lineno)s - %(funcName)15s()] %(message)s"
     logger.setLevel(log_level)
     sh = logging.StreamHandler()
     sh.setLevel(log_level)
@@ -277,16 +293,20 @@ if __name__ == "__main__":
 
     # logging.basicConfig(format=FORMAT, level=log_level)
 
-    depth = 4
-    mc = MCTS(depth, draw=False)
+    mc = MCTS(args.depth, draw=False)
     # res = mc.simulate(1)
 
     tra = mc.run()
     print(f"returned trajectory: ")
     print(tra)
     value = mc.tree.nodes[tra[-1]]["value"]
-    print(f"value of trajectory terminal node: {value}")
-    pdb.set_trace()
+    target_value = mc.tree.nodes[mc.target_name]["value"]
+    dist = MCTS.edit_distance(
+        mc.tree.nodes[tra[-1]]["address"], mc.tree.nodes[mc.target_name]["address"]
+    )
+    print(
+        f"value of trajectory terminal node: {value:.2f} ({100 * value/target_value:.2f}% of target_value {target_value:.2f}), dist = {dist}"
+    )
 
     exit(0)
     tree = mc.tree
