@@ -19,12 +19,12 @@ logger = logging.getLogger(__name__)
 STATS_TEMPLATE = {"vals": []}
 
 # max number of iterations starting at a given root node
-MAX_ITERATIONS = 20
+MAX_ITERATIONS = 100
 
 # max number of rollouts from a given "snowcap" leaf node
 MAX_ROLLOUTS = 5
 
-EXPANSION_PROB = 0.25
+EXPANSION_PROB = 0.05
 
 
 def avg(arr: List) -> float:
@@ -63,7 +63,7 @@ class MCTS:
 
         self.reset(depth, draw=draw)
 
-    def reset(self, depth: int, draw: bool = False, save: bool = False):
+    def reset(self, depth: int, draw: bool = False, save: bool = True):
         assert depth >= 1
         logger.info(f"creating tree with depth {depth}")
         tree = nx.Graph()
@@ -208,23 +208,30 @@ class MCTS:
                     "value": nodes[c]["value"] if "value" in nodes[c] else None,
                 }
 
-            cur_root = max(
+            new_root = max(
                 rel_children,
-                key=lambda c: nodes[c]["value"] if "value" in nodes[c]
-                # else len(nodes[c]["stats"]["vals"]),
-                else avg(nodes[c]["stats"]["vals"]),
-            )
-            trajectory.append(cur_root)
-            logger.info(
-                f"moving to new root {cur_root} ({len(rel_children)} children considered), trajectory = {trajectory}"
+                key=lambda c: nodes[c]["value"]
+                if "value" in nodes[c]
+                else len(nodes[c]["stats"]["vals"]),
+                # else avg(nodes[c]["stats"]["vals"]),
             )
             logger.info("all_selected was:")
             logger.info(all_selected)
             logger.info("child_stats=")
             logger.info(child_stats)
-            # if cur_root not in optimal_tra:
-            #    pdb.set_trace()
-            # print()
+            if new_root not in optimal_tra:
+                logger.info("child_stats=")
+                logger.info(child_stats)
+                logger.info("optimal_tra=")
+                logger.info(optimal_tra)
+                # pdb.set_trace()
+                # TODO: draw current snowcap (subtree)
+            cur_root = new_root
+            trajectory.append(cur_root)
+            logger.info(
+                f"moving to new root {cur_root} ({len(rel_children)} children considered), trajectory = {trajectory}"
+            )
+            print()
         return trajectory
 
     def selection(self, node: int) -> int:
@@ -255,14 +262,19 @@ class MCTS:
                     math.log(parent_visits) / len(stats["vals"])
                 )
 
-        return self.selection(max(rel_children, key=lambda c: ucb_scores[c]))
+        selected = self.selection(max(rel_children, key=lambda c: ucb_scores[c]))
+
+        if node == 1:
+            print(ucb_scores)
+            print(selected)
+        return selected
 
     def expansion(self, node: int) -> Optional[int]:
         """
         Expands the search tree, from the given "snowcap" leaf node, randomly picking a new child to explore.
         If all children have been explored, returns node as fallback.
         """
-        logger.info(f"expanding from node {node}\n")
+        logger.debug(f"expanding from node {node}\n")
         if "snowcap" not in self.tree.nodes[node]:
             cur = node
         else:
@@ -273,7 +285,7 @@ class MCTS:
                 return node
             cur = random.choice(unex_children)
 
-        logger.info(f"expanding node {cur}\n")
+        logger.debug(f"expanding node {cur}\n")
         self.tree.nodes[cur]["stats"] = deepcopy(STATS_TEMPLATE)
         self.tree.nodes[cur]["snowcap"] = True
         return cur
@@ -338,6 +350,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "-d", "--debug", action="store_true", help="enable debug logging"
     )
+    parser.add_argument("-c", type=float, help="hyperparam for UCB", default=1.5)
     args = parser.parse_args()
 
     log_level = logging.DEBUG if args.debug else logging.INFO
@@ -350,7 +363,7 @@ if __name__ == "__main__":
 
     # logging.basicConfig(format=FORMAT, level=log_level)
 
-    mc = MCTS(args.depth, draw=False)
+    mc = MCTS(args.depth, draw=False, c=args.c)
     # res = mc.simulate(1)
 
     tra = mc.run()
