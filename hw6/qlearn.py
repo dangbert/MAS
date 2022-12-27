@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-from copy import deepcopy
 import numpy as np
 import pandas as pd
 from enum import Enum
-from typing import Tuple, Any
-from copy import deepcopy
-import random
-from typing import List, Optional, Union, MutableSet
+import matplotlib.pyplot as plt
 import pdb
+import random
+from typing import List, Tuple, Any, Optional, Union, MutableSet
 
 
 class Spot(Enum):
@@ -40,9 +38,9 @@ class QLearn:
     def init_world(self) -> None:
         self.world = np.zeros((9, 9), dtype=int)
         self.world[1, 2:7] = Spot.WALL.value
-        self.world[1:5, 6] = Spot.WALL.value
+        self.world[1:6, 6] = Spot.WALL.value
         self.world[7, 1:5] = Spot.WALL.value
-        self.world[6:5] = Spot.SNAKES.value
+        self.world[6, 5] = Spot.SNAKES.value
         self.world[-1, -1] = Spot.TREASURE.value
 
     def init_q_table(self) -> None:
@@ -129,7 +127,8 @@ class QLearn:
             if self.world[s] == Spot.TREASURE.value:
                 # TODO: how is reward for termianl state considered?
                 break
-        print(f"terminated episode after {count} actions")
+        # print(f"terminated episode after {count} actions")
+        return rewards
 
     def apply_action(self, s: Loc, a: Union[Action, float]) -> Loc:
         """
@@ -169,9 +168,120 @@ class QLearn:
                 continue
         return actions
 
+    def visualize_qtable(self):
+        action_map = {
+            Action.UP: "^",
+            Action.DOWN: "v",
+            Action.LEFT: "<",
+            Action.RIGHT: ">",
+        }
+
+        # Input list
+        arrows = [
+            ["v", ">", ">", ">", ">", ">", ">", "v", "v"],
+            ["v", "v", "X", "X", "X", "X", "X", "v", "v"],
+            ["v", "v", "v", "v", "v", "v", "X", ">", "v"],
+            ["v", "v", "v", "v", "v", "<", "X", ">", "v"],
+            ["v", "v", "v", "v", "<", "<", "X", ">", "v"],
+            ["v", "v", "v", "v", "v", "<", "X", ">", "v"],
+            ["v", "<", "<", "<", "<", "S", "v", ">", "v"],
+            ["v", "X", "X", "X", "X", "v", "v", "v", "v"],
+            [">", ">", ">", ">", ">", ">", ">", ">", "O"],
+        ]
+
+        # Create a figure and axis
+        fig, ax = plt.subplots()
+        # Set axis limits
+
+        num_rows = self.world.shape[0]
+        num_cols = self.world.shape[1]
+
+        ax.set_xlim([-1, num_cols])
+        ax.set_ylim([-1, num_rows])
+        ax.set_aspect("equal")
+        # ax.invert_yaxis()
+
+        spot_alpha = 0.75
+        arrows = []
+        for r in range(self.world.shape[0]):
+            arrows.append([])
+            for c in range(self.world.shape[1]):
+                s = (r, c)
+                row_idx = self.qtable.loc[self.qtable["s"] == s]["q"].idxmax()
+                a = Action(self.qtable.iloc[row_idx]["a"])
+
+                arrows[-1].append(action_map[a])
+                arrow = action_map[a]
+                spot = Spot(self.world[s])
+
+                if spot == Spot.TREASURE:
+                    # ax.scatter(
+                    #    c + 0.5,
+                    #    num_rows - r - 1 - 0.5,
+                    #    marker="*",
+                    #    s=200,
+                    #    color="green",
+                    #    alpha=spot_alpha,
+                    # )
+                    ax.add_patch(
+                        plt.Rectangle(
+                            (c + 0.5, num_rows - r - 1 - 0.75),
+                            0.5,
+                            0.5,
+                            facecolor="green",
+                            alpha=spot_alpha,
+                        )
+                    )
+                elif spot == Spot.SNAKES:
+                    ax.add_patch(
+                        plt.Rectangle(
+                            (c + 0.5, num_rows - r - 1 - 0.75),
+                            0.5,
+                            0.5,
+                            facecolor="red",
+                            alpha=spot_alpha,
+                        )
+                    )
+                elif spot == Spot.WALL:
+                    ax.add_patch(
+                        plt.Rectangle(
+                            (c + 0.5, num_rows - r - 1 - 0.75),
+                            0.5,
+                            0.5,
+                            facecolor="blue",
+                            alpha=spot_alpha,
+                        )
+                    )
+
+                if arrow in [">", "<", "^", "v"] and spot in {Spot.EMPTY, Spot.SNAKES}:
+                    ax.arrow(
+                        c + 0.5,
+                        num_rows - r - 1 - 0.5,
+                        {">": 0.5, "<": -0.5, "^": 0, "v": 0}[arrow],
+                        {">": 0, "<": 0, "^": 0.5, "v": -0.5}[arrow],
+                        head_width=0.2,
+                        head_length=0.1,
+                        fc="k",
+                        ec="k",
+                        length_includes_head=True,
+                    )
+
+        # Remove the axis labels and ticks
+        # ax.set_xticks([])
+        # ax.set_yticks([])
+        # ax.set_axis_off()
+
+        ax.set_xticks(np.arange(0, num_cols, 1))
+        ax.set_yticks(np.arange(0, num_rows, 1))
+        ax.grid(True, which="major", alpha=0.6)
+
+        # Show the plot
+        plt.show()
+
 
 if __name__ == "__main__":
     sim = QLearn()
+    sim.visualize_qtable()
     sim.run_episode()
 
     import pdb
