@@ -5,7 +5,7 @@ from enum import Enum
 import matplotlib.pyplot as plt
 import pdb
 import random
-from typing import List, Tuple, Any, Optional, Union, MutableSet
+from typing import List, Tuple, Any, Optional, Union, MutableSet, Dict
 
 
 class Spot(Enum):
@@ -75,15 +75,18 @@ class QLearn:
         alpha: float = 0.9,
         gamma: float = 2 / 3,
         epsilon: float = 0.08,
-    ):
+        max_steps: Optional[int] = None,
+    ) -> Tuple[List, List]:
         """
         Run one episode of qlearning.
 
         :param s0 (optional) initial state to start at. If not provided random state is selected.
-        :param alpha learning rate
+        :param alpha learning rate (set to 0 to disable learning)
         :param gamma discount factor of future rewards
-        :param epsilon value for epsilon-greedy selection
+        :param epsilon value for epsilon-greedy selection (set to 1.0 for always greedy).
             (i.e. the prob. of selecting a random action instead of the greedy best action)
+
+        :param max_steps stop simulation after this many steps if terminal state not reached.
 
         References:
             p. 131 in "Reinforcement Learning" 2nd Edition by Sutton.
@@ -91,18 +94,18 @@ class QLearn:
         assert 0.0 <= epsilon <= 1.0
 
         # get random initial (non-terminal) state e.g. (0,0)
-        while s0 is None:
+        while s0 is None or self.world[s0] == Spot.TREASURE.value:
             s0 = (
                 random.randint(0, self.world.shape[0] - 1),
                 random.randint(0, self.world.shape[1] - 1),
             )
-            if self.world[s0] != Spot.TREASURE.value:
-                break
 
-        count = 0
         rewards = []
+        history = []
         s = s0
         while True:
+            if max_steps is not None and len(rewards) >= max_steps:
+                break
             # choose action from policy derived by qtable
 
             # get rows for this state, select row with action to perform
@@ -113,6 +116,13 @@ class QLearn:
                 cur_idx = random.choice(cur_rows.index)  # select random action
             cur_row = self.qtable.iloc[cur_idx]
 
+            rewards.append(cur_row["r"])
+            if self.world[s] == Spot.TREASURE.value:
+                history.append(
+                    {"s": s, "a": cur_row["a"], "r": cur_row["r"], "next_s": None}
+                )
+                break
+
             next_s = self.apply_action(s, Action(cur_row["a"]))
             next_rows = self.qtable.loc[self.qtable["s"] == next_s]
             next_row = self.qtable.iloc[next_rows["q"].idxmax()]
@@ -121,14 +131,42 @@ class QLearn:
             self.qtable.at[cur_idx, "q"] = cur_row["q"] + alpha * (
                 cur_row["r"] + gamma * next_row["q"] - cur_row["q"]
             )
-            rewards.append(cur_row["r"])
+
+            history.append(
+                {"s": s, "a": cur_row["a"], "r": cur_row["r"], "next_s": next_s}
+            )
             s = next_s
-            count += 1
-            if self.world[s] == Spot.TREASURE.value:
-                # TODO: how is reward for termianl state considered?
-                break
         # print(f"terminated episode after {count} actions")
-        return rewards
+        return rewards, history
+
+    def replay_experience(
+        self,
+        exp: Dict,
+        alpha: float = 0.9,
+        gamma: float = 2 / 3,
+    ):
+        """
+        Learn by replaying a single given experience.
+
+        :param exp the experience to replay
+            (E.g. an entry of the history list returned by run_episode()
+        """
+        assert type(exp) == dict
+        if Spot(self.world[exp["s"]]) == Spot.TREASURE:
+            return
+        # self.qtable.loc[(self.qtable["s"] == exp['s'] & self.qtable['a'] == exp['a'])]
+        cur_row = self.qtable[(self.qtable["s"] == exp["s"])].loc[
+            self.qtable["a"] == exp["a"]
+        ]
+        assert len(cur_row) == 1
+        cur_idx = cur_row.index[0]
+        next_rows = self.qtable.loc[self.qtable["s"] == exp["next_s"]]
+        next_row = self.qtable.iloc[next_rows["q"].idxmax()]
+
+        # qlearn
+        self.qtable.at[cur_idx, "q"] = cur_row["q"] + alpha * (
+            cur_row["r"] + gamma * next_row["q"] - cur_row["q"]
+        )
 
     def apply_action(self, s: Loc, a: Union[Action, float]) -> Loc:
         """
@@ -168,40 +206,29 @@ class QLearn:
                 continue
         return actions
 
-    def visualize_qtable(self):
-        action_map = {
+    def visualize_qtable(self, title: str = ""):
+        """Draw the world with greedy action for each state overlayed."""
+        ACTION_MAP = {
             Action.UP: "^",
             Action.DOWN: "v",
             Action.LEFT: "<",
             Action.RIGHT: ">",
         }
-
-        # Input list
-        arrows = [
-            ["v", ">", ">", ">", ">", ">", ">", "v", "v"],
-            ["v", "v", "X", "X", "X", "X", "X", "v", "v"],
-            ["v", "v", "v", "v", "v", "v", "X", ">", "v"],
-            ["v", "v", "v", "v", "v", "<", "X", ">", "v"],
-            ["v", "v", "v", "v", "<", "<", "X", ">", "v"],
-            ["v", "v", "v", "v", "v", "<", "X", ">", "v"],
-            ["v", "<", "<", "<", "<", "S", "v", ">", "v"],
-            ["v", "X", "X", "X", "X", "v", "v", "v", "v"],
-            [">", ">", ">", ">", ">", ">", ">", ">", "O"],
-        ]
+        SPOT_ALPHA = 0.75
 
         # Create a figure and axis
         fig, ax = plt.subplots()
-        # Set axis limits
+        if title:
+            ax.set_title(title)
 
+        # Set axis limits
         num_rows = self.world.shape[0]
         num_cols = self.world.shape[1]
-
         ax.set_xlim([-1, num_cols])
         ax.set_ylim([-1, num_rows])
-        ax.set_aspect("equal")
+        # ax.set_aspect("equal")
         # ax.invert_yaxis()
 
-        spot_alpha = 0.75
         arrows = []
         for r in range(self.world.shape[0]):
             arrows.append([])
@@ -210,8 +237,8 @@ class QLearn:
                 row_idx = self.qtable.loc[self.qtable["s"] == s]["q"].idxmax()
                 a = Action(self.qtable.iloc[row_idx]["a"])
 
-                arrows[-1].append(action_map[a])
-                arrow = action_map[a]
+                arrows[-1].append(ACTION_MAP[a])
+                arrow = ACTION_MAP[a]
                 spot = Spot(self.world[s])
 
                 if spot == Spot.TREASURE:
@@ -229,7 +256,7 @@ class QLearn:
                             0.5,
                             0.5,
                             facecolor="green",
-                            alpha=spot_alpha,
+                            alpha=SPOT_ALPHA,
                         )
                     )
                 elif spot == Spot.SNAKES:
@@ -239,7 +266,7 @@ class QLearn:
                             0.5,
                             0.5,
                             facecolor="red",
-                            alpha=spot_alpha,
+                            alpha=SPOT_ALPHA,
                         )
                     )
                 elif spot == Spot.WALL:
@@ -249,7 +276,7 @@ class QLearn:
                             0.5,
                             0.5,
                             facecolor="blue",
-                            alpha=spot_alpha,
+                            alpha=SPOT_ALPHA,
                         )
                     )
 
@@ -269,22 +296,46 @@ class QLearn:
         # Remove the axis labels and ticks
         # ax.set_xticks([])
         # ax.set_yticks([])
-        # ax.set_axis_off()
 
         ax.set_xticks(np.arange(0, num_cols, 1))
         ax.set_yticks(np.arange(0, num_rows, 1))
         ax.grid(True, which="major", alpha=0.6)
+        # ax.set_axis_off()
 
         # Show the plot
         plt.show()
 
 
+def strategy2b():
+    sim = QLearn()
+
+    MAX_BUFFER = 10000
+    MAX_STEPS = 10000
+    sim.visualize_qtable(title=f"Q Table After {0} Replay Steps")
+
+    # build buffer of experiences
+    buffer = []
+    while len(buffer) < MAX_BUFFER:
+        buffer.extend(sim.run_episode(alpha=0, max_steps=25)[1])
+    buffer = buffer[:MAX_BUFFER]
+
+    print(f"collected {len(buffer)} experiences to sample from.")
+    # exps = random.choices(buffer, k=1000)
+    for _ in range(MAX_STEPS):
+        sim.replay_experience(random.choice(buffer))
+    sim.visualize_qtable(title=f"Q Table After {MAX_STEPS} Replay Steps")
+
+
 if __name__ == "__main__":
     sim = QLearn()
-    sim.visualize_qtable()
-    sim.run_episode()
+    # sim.visualize_qtable()
+    # sim.run_episode()
 
-    import pdb
+    strategy2b()
+    # build buffer of experiences
+    # _, buffer = sim.run_episode(alpha=0, max_steps=50)
+    # print(f"collected {len(buffer)} experiences to sample from.")
+    # sim.replay_experience(buffer[0])
 
     pdb.set_trace()
     exit(0)
