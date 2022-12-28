@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-import numpy as np
-import pandas as pd
+"""
+Implements Q-Learning in a (static) grid world environment.
+The textbook p. "Reinforcement Learning" 2nd Edition by Sutton was referenced for this assignment.
+"""
 from enum import Enum
+import numpy as np
+import os
+import pandas as pd
+import shutil
 import matplotlib.pyplot as plt
 import pdb
 import random
@@ -21,6 +27,14 @@ class Action(Enum):
     DOWN = 2
     LEFT = 3
 
+
+# for visualizing actions
+ACTION_MAP = {
+    Action.UP: "^",
+    Action.DOWN: "v",
+    Action.LEFT: "<",
+    Action.RIGHT: ">",
+}
 
 Loc = Tuple[int, int]
 
@@ -54,7 +68,7 @@ class QLearn:
                 s = (row, col)
                 for a in self.get_possible_actions(s):
                     r = -1
-                    q = np.random.normal()
+                    q = np.random.normal(scale=0.1)
                     if self.world[s] == Spot.TREASURE.value:
                         # terminal state
                         q, r = 0, 50
@@ -74,16 +88,17 @@ class QLearn:
         s0: Optional[Loc] = None,
         alpha: float = 0.9,
         gamma: float = 2 / 3,
-        epsilon: float = 0.08,
+        epsilon: float = 0.10,
         max_steps: Optional[int] = None,
+        save_dir: str = "",
     ) -> Tuple[List, List]:
         """
-        Run one episode of qlearning.
+        Run one episode of qlearning (play grid world until termination).
 
         :param s0 (optional) initial state to start at. If not provided random state is selected.
-        :param alpha learning rate (set to 0 to disable learning)
+        :param alpha learning rate (set to 0.0 to disable learning)
         :param gamma discount factor of future rewards
-        :param epsilon value for epsilon-greedy selection (set to 1.0 for always greedy).
+        :param epsilon value for epsilon-greedy action selection (0.0 for pure greedy selection, 1.0 for pure random selection).
             (i.e. the prob. of selecting a random action instead of the greedy best action)
 
         :param max_steps stop simulation after this many steps if terminal state not reached.
@@ -110,11 +125,22 @@ class QLearn:
 
             # get rows for this state, select row with action to perform
             cur_rows = self.qtable.loc[self.qtable["s"] == s]
-            if random.random() > epsilon:
-                cur_idx = cur_rows["q"].idxmax()  # select greedy action
-            else:
+            if random.random() < epsilon:
                 cur_idx = random.choice(cur_rows.index)  # select random action
+            else:
+                cur_idx = cur_rows["q"].idxmax()  # select greedy action
             cur_row = self.qtable.iloc[cur_idx]
+
+            if save_dir:
+                if len(rewards) > 100:
+                    pdb.set_trace()
+                self.visualize_qtable(
+                    save_path=os.path.join(
+                        save_dir, f"step{str(len(rewards)).zfill(4)}.png"
+                    ),
+                    player_state=s,
+                    title=f"s={s}, a={ACTION_MAP[Action(cur_row['a'])]}, r={cur_row['r']:.3f}, q={cur_row['q']:.3f}",
+                )
 
             rewards.append(cur_row["r"])
             if self.world[s] == Spot.TREASURE.value:
@@ -133,13 +159,13 @@ class QLearn:
             )
 
             history.append(
-                {"s": s, "a": cur_row["a"], "r": cur_row["r"], "next_s": next_s}
+                {"s": s, "a": cur_row["a"], "r": next_row["r"], "next_s": next_s}
             )
             s = next_s
         # print(f"terminated episode after {count} actions")
         return rewards, history
 
-    def replay_experience(
+    def experience_replay(
         self,
         exp: Dict,
         alpha: float = 0.9,
@@ -150,6 +176,11 @@ class QLearn:
 
         :param exp the experience to replay
             (E.g. an entry of the history list returned by run_episode()
+
+        References:
+            p. 440 textbook
+            https://youtu.be/Bcuj2fTH4_4?t=278
+            https://youtu.be/0bt0SjbS3xc?t=272
         """
         assert type(exp) == dict
         if Spot(self.world[exp["s"]]) == Spot.TREASURE:
@@ -164,8 +195,11 @@ class QLearn:
         next_row = self.qtable.iloc[next_rows["q"].idxmax()]
 
         # qlearn
+        # self.qtable.at[cur_idx, "q"] = cur_row["q"] + alpha * (
+        #    cur_row["r"] + gamma * next_row["q"] - cur_row["q"]
+        # )
         self.qtable.at[cur_idx, "q"] = cur_row["q"] + alpha * (
-            cur_row["r"] + gamma * next_row["q"] - cur_row["q"]
+            exp["r"] + gamma * next_row["q"] - cur_row["q"]
         )
 
     def apply_action(self, s: Loc, a: Union[Action, float]) -> Loc:
@@ -206,14 +240,10 @@ class QLearn:
                 continue
         return actions
 
-    def visualize_qtable(self, title: str = ""):
+    def visualize_qtable(
+        self, title: str = "", player_state: Optional[Loc] = None, save_path: str = ""
+    ):
         """Draw the world with greedy action for each state overlayed."""
-        ACTION_MAP = {
-            Action.UP: "^",
-            Action.DOWN: "v",
-            Action.LEFT: "<",
-            Action.RIGHT: ">",
-        }
         SPOT_ALPHA = 0.75
 
         # Create a figure and axis
@@ -293,6 +323,16 @@ class QLearn:
                         length_includes_head=True,
                     )
 
+                if player_state is not None and s == player_state:
+                    ax.scatter(
+                        c + 0.5,
+                        num_rows - r - 1 - 0.5,
+                        marker="*",
+                        s=200,
+                        color="yellow",
+                        alpha=SPOT_ALPHA,
+                    )
+
         # Remove the axis labels and ticks
         # ax.set_xticks([])
         # ax.set_yticks([])
@@ -302,27 +342,83 @@ class QLearn:
         ax.grid(True, which="major", alpha=0.6)
         # ax.set_axis_off()
 
-        # Show the plot
-        plt.show()
+        if save_path:
+            plt.savefig(save_path, dpi=400)
+            plt.close(fig)
+        else:
+            plt.show()
+
+
+# def fitness(sim: QLearn):
+
+
+def strategy2a(display=print, save_dir=""):
+    """Experiment with qlearning (direct updates)."""
+    ITERATIONS = 1000
+    # ITERATIONS = 5
+
+    sim = QLearn()
+    # world = ql.create_world()
+    print(f"initial Q table:")
+    display(sim.qtable)
+    sim.visualize_qtable(title="Initial Random Q table (Showing Greedy Actions)")
+
+    s0 = (0, 0)
+    rewards = []
+    for _ in range(ITERATIONS):
+        rewards.append(sim.run_episode()[0])
+        # rewards.append(sim.run_episode(s0=s0))
+
+    plt.title(
+        f"Total Rewards Across {ITERATIONS} Learning Episodes (With Random Initial States)"
+    )
+    plt.plot(range(0, len(rewards)), [sum(r) for r in rewards])
+    plt.xlabel("Episode")
+    plt.ylabel("Total Reward")
+
+    print(f"new Q table:")
+    display(sim.qtable)
+    sim.visualize_qtable(title="Q Table Post Learning")
+
+    # save_dir = "tmp"
+    if save_dir:
+        if os.path.isdir(save_dir):
+            shutil.rmtree(save_dir)
+        os.makedirs(save_dir)
+        print(f"writing to {save_dir}")
+
+    ESPSILON = 0.05
+    step_rewards = sim.run_episode(
+        s0=s0, epsilon=ESPSILON, alpha=0.0, save_dir=save_dir
+    )[0]
+    plt.title(
+        f"Reward Across Each Step of Single Episode (With Epsilon={ESPSILON:.3f} Greedy Selection)"
+    )
+
+    plt.plot(range(0, len(step_rewards)), step_rewards)
+    plt.xlabel("Time Step")
+    plt.ylabel("Reward")
 
 
 def strategy2b():
-    sim = QLearn()
-
+    """Experiment with qlearning with experience replay buffer."""
     MAX_BUFFER = 10000
     MAX_STEPS = 10000
+
+    sim = QLearn()
     sim.visualize_qtable(title=f"Q Table After {0} Replay Steps")
 
     # build buffer of experiences
     buffer = []
     while len(buffer) < MAX_BUFFER:
-        buffer.extend(sim.run_episode(alpha=0, max_steps=25)[1])
+        # we use a high epsilon for experience collection to encourage trying a diverse set of actions
+        buffer.extend(sim.run_episode(alpha=0, epsilon=0.75, max_steps=1000)[1])
     buffer = buffer[:MAX_BUFFER]
 
     print(f"collected {len(buffer)} experiences to sample from.")
     # exps = random.choices(buffer, k=1000)
     for _ in range(MAX_STEPS):
-        sim.replay_experience(random.choice(buffer))
+        sim.experience_replay(random.choice(buffer))
     sim.visualize_qtable(title=f"Q Table After {MAX_STEPS} Replay Steps")
 
 
@@ -331,7 +427,8 @@ if __name__ == "__main__":
     # sim.visualize_qtable()
     # sim.run_episode()
 
-    strategy2b()
+    strategy2a(save_dir="")
+    # strategy2b()
     # build buffer of experiences
     # _, buffer = sim.run_episode(alpha=0, max_steps=50)
     # print(f"collected {len(buffer)} experiences to sample from.")
