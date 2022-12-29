@@ -11,7 +11,7 @@ import shutil
 import matplotlib.pyplot as plt
 import pdb
 import random
-from typing import List, Tuple, Any, Optional, Union, MutableSet, Dict
+from typing import List, Tuple, Any, Optional, Union, MutableSet, Dict, Callable
 
 
 class Spot(Enum):
@@ -69,12 +69,13 @@ class QLearn:
                 for a in self.get_possible_actions(s):
                     r = -1
                     q = np.random.normal(scale=0.1)
-                    if self.world[s] == Spot.TREASURE.value:
+                    next_s = self.apply_action(s, a)
+                    # the reward for (s,a) comes from next_s
+                    if self.world[next_s] == Spot.TREASURE.value:
                         # terminal state
                         q, r = 0, 50
-                    elif self.world[s] == Spot.SNAKES.value:
+                    elif self.world[next_s] == Spot.SNAKES.value:
                         r = -50
-                    next_s = self.apply_action(s, a)
 
                     cur_row = {"s": [s], "a": [a.value], "r": [r], "q": [q]}
                     # table = table.append(cur_row, ignore_index=True)
@@ -88,6 +89,7 @@ class QLearn:
         s0: Optional[Loc] = None,
         alpha: float = 0.9,
         gamma: float = 2 / 3,
+        sarsa: bool = False,
         epsilon: float = 0.10,
         max_steps: Optional[int] = None,
         save_dir: str = "",
@@ -100,8 +102,10 @@ class QLearn:
         :param gamma discount factor of future rewards
         :param epsilon value for epsilon-greedy action selection (0.0 for pure greedy selection, 1.0 for pure random selection).
             (i.e. the prob. of selecting a random action instead of the greedy best action)
+        :param sarsa toggle SARSA learnign algorithm (instead of Q-learning default)
 
         :param max_steps stop simulation after this many steps if terminal state not reached.
+        :param save_dir optional path to directoy to save visualization of each time step
 
         References:
             p. 131 in "Reinforcement Learning" 2nd Edition by Sutton.
@@ -109,11 +113,17 @@ class QLearn:
         assert 0.0 <= epsilon <= 1.0
 
         # get random initial (non-terminal) state e.g. (0,0)
-        while s0 is None or self.world[s0] == Spot.TREASURE.value:
+        while s0 is None or Spot(self.world[s0]) != Spot.EMPTY:
             s0 = (
                 random.randint(0, self.world.shape[0] - 1),
                 random.randint(0, self.world.shape[1] - 1),
             )
+
+        def epsilon_greedy(rows: pd.DataFrame, epsilon: float) -> int:
+            """Do epsilon greedy action selection, returning the index of the selected row (from a subset of the qtable)."""
+            if random.random() < epsilon:
+                return random.choice(rows.index)  # select random action
+            return rows["q"].idxmax()  # select greedy action
 
         rewards = []
         history = []
@@ -121,19 +131,31 @@ class QLearn:
         while True:
             if max_steps is not None and len(rewards) >= max_steps:
                 break
-            # choose action from policy derived by qtable
+            if self.world[s] == Spot.TREASURE.value:
+                break
 
             # get rows for this state, select row with action to perform
             cur_rows = self.qtable.loc[self.qtable["s"] == s]
-            if random.random() < epsilon:
-                cur_idx = random.choice(cur_rows.index)  # select random action
-            else:
-                cur_idx = cur_rows["q"].idxmax()  # select greedy action
+            cur_idx = epsilon_greedy(cur_rows, epsilon)
             cur_row = self.qtable.iloc[cur_idx]
 
+            # choose action from policy derived by qtable
+            next_s = self.apply_action(s, Action(cur_row["a"]))
+            next_rows = self.qtable.loc[self.qtable["s"] == next_s]
+            next_row = self.qtable.iloc[next_rows["q"].idxmax()]
+            if sarsa:
+                next_row = self.qtable.iloc[epsilon_greedy(next_rows, epsilon)]
+
+            # update q value for (s,a) in place
+            self.qtable.at[cur_idx, "q"] = cur_row["q"] + alpha * (
+                cur_row["r"] + gamma * next_row["q"] - cur_row["q"]
+            )
+
+            rewards.append(cur_row["r"])
+            history.append(
+                {"s": s, "a": cur_row["a"], "r": next_row["r"], "next_s": next_s}
+            )
             if save_dir:
-                if len(rewards) > 100:
-                    pdb.set_trace()
                 self.visualize_qtable(
                     save_path=os.path.join(
                         save_dir, f"step{str(len(rewards)).zfill(4)}.png"
@@ -141,26 +163,6 @@ class QLearn:
                     player_state=s,
                     title=f"s={s}, a={ACTION_MAP[Action(cur_row['a'])]}, r={cur_row['r']:.3f}, q={cur_row['q']:.3f}",
                 )
-
-            rewards.append(cur_row["r"])
-            if self.world[s] == Spot.TREASURE.value:
-                history.append(
-                    {"s": s, "a": cur_row["a"], "r": cur_row["r"], "next_s": None}
-                )
-                break
-
-            next_s = self.apply_action(s, Action(cur_row["a"]))
-            next_rows = self.qtable.loc[self.qtable["s"] == next_s]
-            next_row = self.qtable.iloc[next_rows["q"].idxmax()]
-
-            # update q value for (s,a) in place
-            self.qtable.at[cur_idx, "q"] = cur_row["q"] + alpha * (
-                cur_row["r"] + gamma * next_row["q"] - cur_row["q"]
-            )
-
-            history.append(
-                {"s": s, "a": cur_row["a"], "r": next_row["r"], "next_s": next_s}
-            )
             s = next_s
         # print(f"terminated episode after {count} actions")
         return rewards, history
@@ -342,6 +344,13 @@ class QLearn:
         ax.grid(True, which="major", alpha=0.6)
         # ax.set_axis_off()
 
+        # hide axis labels (but keep grid visible)
+        for tick in ax.xaxis.get_major_ticks() + ax.yaxis.get_major_ticks():
+            tick.tick1line.set_visible(False)
+            tick.tick2line.set_visible(False)
+            tick.label1.set_visible(False)
+            tick.label2.set_visible(False)
+
         if save_path:
             plt.savefig(save_path, dpi=400)
             plt.close(fig)
@@ -349,36 +358,43 @@ class QLearn:
             plt.show()
 
 
-# def fitness(sim: QLearn):
-
-
-def strategy2a(display=print, save_dir=""):
-    """Experiment with qlearning (direct updates)."""
-    ITERATIONS = 1000
-    # ITERATIONS = 5
-
+def direct_updates(
+    sarsa: bool = False,
+    epsilon: float = 0.1,
+    iterations: int = 1000,
+    show_initial: bool = True,
+    show_final: bool = False,
+    display: Callable = print,
+    save_dir: str = "",
+    csv_path: str = "",
+) -> QLearn:
+    """
+    Experiment with qlearning (direct updates).
+    Set sarsa=True to experiment with SARSA instead of q-learning.
+    Set epsilon=0.0 for greedification.
+    """
     sim = QLearn()
-    # world = ql.create_world()
-    print(f"initial Q table:")
-    display(sim.qtable)
-    sim.visualize_qtable(title="Initial Random Q table (Showing Greedy Actions)")
+    if show_initial:
+        print(f"initial Q table:")
+        display(sim.qtable)
+        sim.visualize_qtable(title="Initial Random Q table (Showing Greedy Actions)")
 
     s0 = (0, 0)
     rewards = []
-    for _ in range(ITERATIONS):
-        rewards.append(sim.run_episode()[0])
+    for _ in range(iterations):
+        rewards.append(sim.run_episode(sarsa=sarsa, epsilon=epsilon)[0])
         # rewards.append(sim.run_episode(s0=s0))
 
     plt.title(
-        f"Total Rewards Across {ITERATIONS} Learning Episodes (With Random Initial States)"
+        f"Total Rewards Across {iterations} Learning Episodes (With Random Initial States)"
     )
     plt.plot(range(0, len(rewards)), [sum(r) for r in rewards])
     plt.xlabel("Episode")
     plt.ylabel("Total Reward")
 
-    print(f"new Q table:")
+    print(f"Q table (post learning):")
     display(sim.qtable)
-    sim.visualize_qtable(title="Q Table Post Learning")
+    sim.visualize_qtable(title="Q Table Post Learning (Showing Greedy Actions)")
 
     # save_dir = "tmp"
     if save_dir:
@@ -387,39 +403,44 @@ def strategy2a(display=print, save_dir=""):
         os.makedirs(save_dir)
         print(f"writing to {save_dir}")
 
-    ESPSILON = 0.05
-    step_rewards = sim.run_episode(
-        s0=s0, epsilon=ESPSILON, alpha=0.0, save_dir=save_dir
-    )[0]
-    plt.title(
-        f"Reward Across Each Step of Single Episode (With Epsilon={ESPSILON:.3f} Greedy Selection)"
-    )
+    if show_final:
+        ESPSILON = 0.05
+        step_rewards = sim.run_episode(
+            s0=s0, epsilon=ESPSILON, alpha=0.0, save_dir=save_dir
+        )[0]
+        plt.title(
+            f"Reward Across Each Step of Single Episode (With Epsilon={ESPSILON:.3f} Greedy Selection)"
+        )
 
-    plt.plot(range(0, len(step_rewards)), step_rewards)
-    plt.xlabel("Time Step")
-    plt.ylabel("Reward")
+        plt.plot(range(0, len(step_rewards)), step_rewards)
+        plt.xlabel("Time Step")
+        plt.ylabel("Reward")
+    if csv_path:
+        sim.qtable.to_csv(csv_path)
+        print(f"wrote {csv_path}")
+    return sim
 
 
-def strategy2b():
+def strategy2b(max_buffer: int = 5000, max_replays: int = 10000):
     """Experiment with qlearning with experience replay buffer."""
-    MAX_BUFFER = 10000
-    MAX_STEPS = 10000
-
     sim = QLearn()
     sim.visualize_qtable(title=f"Q Table After {0} Replay Steps")
 
     # build buffer of experiences
     buffer = []
-    while len(buffer) < MAX_BUFFER:
+    while len(buffer) < max_buffer:
         # we use a high epsilon for experience collection to encourage trying a diverse set of actions
-        buffer.extend(sim.run_episode(alpha=0, epsilon=0.75, max_steps=1000)[1])
-    buffer = buffer[:MAX_BUFFER]
+        history = sim.run_episode(alpha=0, epsilon=0.75, max_steps=1000)[1]
+        # store experiences closer to the episode termination
+        history = history[-200:]
+        buffer.extend(history)
+    buffer = buffer[:max_buffer]
 
     print(f"collected {len(buffer)} experiences to sample from.")
     # exps = random.choices(buffer, k=1000)
-    for _ in range(MAX_STEPS):
+    for _ in range(max_replays):
         sim.experience_replay(random.choice(buffer))
-    sim.visualize_qtable(title=f"Q Table After {MAX_STEPS} Replay Steps")
+    sim.visualize_qtable(title=f"Q Table After {max_replays} Replay Steps")
 
 
 if __name__ == "__main__":
@@ -427,7 +448,7 @@ if __name__ == "__main__":
     # sim.visualize_qtable()
     # sim.run_episode()
 
-    strategy2a(save_dir="")
+    direct_updates()
     # strategy2b()
     # build buffer of experiences
     # _, buffer = sim.run_episode(alpha=0, max_steps=50)
