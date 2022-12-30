@@ -49,7 +49,14 @@ class MCTS:
     target_name: int
     global_root: int  # name of tree's root node
 
-    def __init__(self, depth: int, c: float = 2, B: float = 5, draw: bool = False):
+    def __init__(
+        self,
+        depth: int,
+        c: float = 2.0,
+        B: float = 5.0,
+        draw: bool = False,
+        save: bool = False,
+    ):
         """
         Init class with a binary tree of given depth.
         Nodes are named with ints incrementing from 1 up.
@@ -61,7 +68,7 @@ class MCTS:
         self.c = c
         self.B = B
 
-        self.reset(depth, draw=draw)
+        self.reset(depth, draw=draw, save=save)
 
     def reset(self, depth: int, draw: bool = False, save: bool = True):
         assert depth >= 1
@@ -83,7 +90,8 @@ class MCTS:
                 tree.add_edge(n, last_node + 1)
                 tree.add_edge(n, last_node + 2)
                 last_node += 2
-        if draw or save:
+        if (draw or save) and depth <= 6:
+            plt.clf()
             nx.draw(tree, with_labels=True, node_size=300)
             if save:
                 plt.savefig("graph.pdf", dpi=400)
@@ -231,7 +239,6 @@ class MCTS:
             logger.info(
                 f"moving to new root {cur_root} ({len(rel_children)} children considered), trajectory = {trajectory}"
             )
-            print()
         return trajectory
 
     def selection(self, node: int) -> int:
@@ -264,9 +271,9 @@ class MCTS:
 
         selected = self.selection(max(rel_children, key=lambda c: ucb_scores[c]))
 
-        if node == 1:
-            print(ucb_scores)
-            print(selected)
+        # if node == 1:
+        #    print(ucb_scores)
+        #    print(selected)
         return selected
 
     def expansion(self, node: int) -> Optional[int]:
@@ -367,8 +374,7 @@ if __name__ == "__main__":
     # res = mc.simulate(1)
 
     tra = mc.run()
-    print(f"returned trajectory: ")
-    print(tra)
+    print(f"returned trajectory: {tra}")
     value = mc.tree.nodes[tra[-1]]["value"]
     target_value = mc.tree.nodes[mc.target_name]["value"]
     dist = MCTS.edit_distance(
