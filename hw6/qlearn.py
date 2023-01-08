@@ -77,7 +77,12 @@ class QLearn:
                     elif self.world[next_s] == Spot.SNAKES.value:
                         r = -50
 
-                    cur_row = {"s": [s], "a": [a.value], "r": [r], "q": [q]}
+                    cur_row = {
+                        "s": [s],
+                        "a": [a.value],
+                        "r": [r],
+                        "q": [q],
+                    }
                     # table = table.append(cur_row, ignore_index=True)
                     # table = pd.concat([table, pd.DataFrame(cur_row)], ignore_index=True)
                     table = pd.concat([table, pd.DataFrame(cur_row)], ignore_index=True)
@@ -153,7 +158,13 @@ class QLearn:
 
             rewards.append(cur_row["r"])
             history.append(
-                {"s": s, "a": cur_row["a"], "r": next_row["r"], "next_s": next_s}
+                {
+                    "s": s,
+                    "a": cur_row["a"],
+                    "r": next_row["r"],
+                    "next_s": next_s,
+                    "terminal": self.world[next_s] == Spot.TREASURE.value,
+                }
             )
             if save_dir:
                 self.visualize_qtable(
@@ -443,17 +454,96 @@ def strategy2b(max_buffer: int = 5000, max_replays: int = 10000):
     sim.visualize_qtable(title=f"Q Table After {max_replays} Replay Steps")
 
 
-if __name__ == "__main__":
+def strategy3(max_buffer: int = 10000, training_steps: int = 20000):
+    """
+    Using a DQN.
+    see dqn.py for reference links.
+    """
+    from dqn import DQN
+    import torch
+
+    # gamma = 0.99
+    gamma = 2 / 3
+    batch_size = 32
+    start_e, end_e = 1.0, 0.1
+    epsilon = start_e
+    C = 500  # how often to update target_net
+
     sim = QLearn()
+
+    # build initial experience buffer
+    buffer = []
+    while len(buffer) < max_buffer:
+        # we use a high epsilon for experience collection to encourage trying a diverse set of actions
+        history = sim.run_episode(alpha=0, epsilon=start_e, max_steps=2000)[1]
+        buffer.extend(history)
+    buffer = buffer[:max_buffer]
+
+    # maps (x,y) positions to Q values for each possible action
+    net = DQN(2, len(Action))
+    target_net = DQN(2, len(Action))
+    target_net.load_state_dict(net.state_dict())
+    for i in range(0, training_steps):
+        if i % C == 0:
+            target_net.load_state_dict(net.state_dict())
+            # print(f"epsilon = {epsilon:.3f}")
+            # target_net = copy.deepcopy(net)
+
+        # anneal e from start_e -> end_e
+        epsilon = start_e - (i / training_steps) * (start_e - end_e)
+
+        # get batch of experiences
+        batch_raw = np.random.choice(buffer, batch_size, replace=False)
+        int_keys = ["terminal", "a"]
+        batch = {
+            # e.g. for k='s' create tensor where each row is one state (e.g. dim 32x2)
+            k: torch.tensor(np.array([b[k] for b in batch_raw], dtype=np.float32)).to(
+                net.device
+            )
+            for k in set(batch_raw[0].keys()) - set(int_keys)
+        }
+        # 1 indicates a terminal state, 0 otherwise
+        for k in int_keys:  # int data types
+            batch[k] = torch.tensor(
+                np.array([int(b[k]) for b in batch_raw], dtype=np.int64)
+            ).to(net.device)
+
+        # compute target q values
+        target_qs = target_net(batch["next_s"]).to(net.device)
+        # max q value for each batch
+        # max_target_qs = target_qs.max(dim=1, keepdim=True)[0].to(net.device)
+        max_target_qs = target_qs.max(dim=1)[0].to(net.device)
+
+        # compute q learning targets (note for terminal states the future reward is zeroed)
+        # TODO: understand this better given targets are for (s,a) pair...
+        targets = (batch["r"] + gamma * (1.0 - batch["terminal"]) * max_target_qs).to(
+            net.device
+        )
+        predicted_qs = net(batch["s"]).to(net.device)
+        # get predicted q value of action taken in each episode
+        action_qs = torch.gather(
+            input=predicted_qs, dim=1, index=batch["a"].unsqueeze(-1)
+        ).to(net.device)
+
+        net.optimizer.zero_grad()
+        # TODO: understand how loss works better
+        loss = net.loss(action_qs, targets)
+        loss.backward()
+        net.optimizer.step()
+
+        pdb.set_trace()
+        i += 1
+
+
+if __name__ == "__main__":
+    # sim = QLearn()
     # sim.visualize_qtable()
     # sim.run_episode()
 
-    direct_updates()
+    # direct_updates()
     # strategy2b()
-    # build buffer of experiences
-    # _, buffer = sim.run_episode(alpha=0, max_steps=50)
-    # print(f"collected {len(buffer)} experiences to sample from.")
-    # sim.replay_experience(buffer[0])
+
+    strategy3(max_buffer=1000)
 
     pdb.set_trace()
     exit(0)
