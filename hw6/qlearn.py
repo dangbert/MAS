@@ -12,10 +12,6 @@ import matplotlib.pyplot as plt
 import pdb
 import random
 from typing import List, Tuple, Any, Optional, Union, MutableSet, Dict, Callable
-import json
-
-# from dqn import DQN
-import torch
 
 
 class Spot(Enum):
@@ -67,6 +63,9 @@ class QLearn:
         self.world.shape
         rows, cols = self.world.shape
 
+        if net is not None:
+            import torch
+
         for row in range(rows):
             for col in range(cols):
                 s = (row, col)
@@ -86,12 +85,7 @@ class QLearn:
                         qvals = net(torch.tensor(s, dtype=torch.float32))
                         q = qvals[a.value].item()
 
-                    cur_row = {
-                        "s": [s],
-                        "a": [a.value],
-                        "r": [r],
-                        "q": [q],
-                    }
+                    cur_row = {"s": [s], "a": [a.value], "r": [r], "q": [q]}
                     # table = table.append(cur_row, ignore_index=True)
                     # table = pd.concat([table, pd.DataFrame(cur_row)], ignore_index=True)
                     table = pd.concat([table, pd.DataFrame(cur_row)], ignore_index=True)
@@ -468,173 +462,10 @@ def strategy2b(max_buffer: int = 5000, max_replays: int = 10000):
     sim.visualize_qtable(title=f"Q Table After {max_replays} Replay Steps")
 
 
-def strategy3(
-    max_buffer: int = 50000,
-    training_steps: int = int(1e9),
-    save_dir: str = "dqn_output",
-    start_e: float = 1.0,
-    end_e: float = 0.1,
-    num_measures: int = 100,
-    replay_only: bool = False,
-    replay_draw: bool = False,  # draw measured episodes
-):
-    """
-    Using a DQN.
-    see dqn.py for reference links.
-    """
-    from dqn import DQN, DQAgent
-    import torch
-
-    gamma = 0.99
-    # gamma = 2 / 3
-    batch_size = 64
-    epsilon = start_e
-    C = 15000  # how often to update target_net
-
-    sim = DQAgent()
-
-    buffer = []  # experience buffer
-
-    model_path = os.path.join(save_dir, "model.pth")
-    graph_path = os.path.join(save_dir, "training.pdf")
-    stats_path = os.path.join(save_dir, "stats.json")
-    if not os.path.isdir(save_dir):
-        os.makedirs(save_dir)
-    print(f"will save to '{save_dir}'")
-
-    def plot_stats(stats, save_path: str = ""):
-        plt.clf()
-        plt.title(f"Average Reward of Policy Throughout Training")
-        plt.plot(stats["step"], stats["fitness"])
-        plt.xlabel("Training Step")
-        plt.ylabel("Average Reward (per move)")
-        if save_path:
-            plt.savefig(save_path)
-        else:
-            plt.show()
-
-    # maps (x,y) positions to Q values for each possible action
-    net = DQN(2, len(Action))
-    print(f"device = {net.device}")
-    target_net = DQN(2, len(Action))
-    stats = {"step": [], "fitness": []}
-
-    start_step = 0
-    reloaded = False
-    if os.path.exists(model_path):
-        print(f"reloaded network from '{model_path}'")
-        net.load_state_dict(torch.load(model_path))
-        reloaded = True
-        if os.path.exists(stats_path):
-            with open(stats_path, "r") as f:
-                stats = json.load(f)
-            start_step = int(stats["step"][-1]) + 1
-            print(f"reloaded stats from '{stats_path}' (start_step = {start_step})")
-
-    if replay_only:
-        assert reloaded, f"failed to find model to reload: '{model_path}'"
-        print(f"replaying data from '{save_dir}'")
-        sim.visualize(
-            net, save_path=os.path.join(save_dir, f"qtable_step{start_step-1}.pdf")
-        )
-        trials = 10
-        if replay_draw:
-            score = sim.measure(net, trials=10, save_dir=save_dir)
-        else:
-            score = sim.measure(net, trials=25)
-        print(f"score =\n{score} (averaged over {trials} trials)")
-        print("replay done!")
-        exit(0)
-
-    must_init = True
-    for i in range(start_step, training_steps):
-        if must_init or i % C == 0:
-            print("updating target_net")
-            # update target_net (on first iteration and every C iterations after)
-            target_net.load_state_dict(net.state_dict())
-            must_init = False
-
-        # anneal e from start_e -> end_e
-        #   (initialy using a high epsilon for experience collection to encourage trying a diverse set of actions)
-        epsilon = start_e - (i / training_steps) * (start_e - end_e)
-        # print(f"epsilon = {epsilon:.3f}")
-
-        if i % int(training_steps / num_measures) == 0:
-            stats["step"].append(i)
-            stats["fitness"].append(sim.measure(net, trials=25))
-            plot_stats(stats, save_path=graph_path)
-            torch.save(net.state_dict(), model_path)
-            with open(stats_path, "w") as f:
-                json.dump(stats, f, indent=2)
-
-            print(
-                f"training step {i}/{training_steps} ({(100 * i / training_steps):.3f}%): avg_reward = {stats['fitness'][-1]:.3f}, epsilon={epsilon:.3f}"
-            )
-
-        # (conditionally) update memory buffer with newer experiences
-        if i % 5000 == 0:
-            buffer = buffer[5000:]
-        while len(buffer) < max_buffer:
-            history = sim.run_episode(net, epsilon=epsilon, max_steps=2000)[1]
-            buffer.extend(history)
-        buffer = buffer[:max_buffer]
-
-        # get batch of experiences
-        batch_raw = np.random.choice(buffer, batch_size, replace=False)
-        int_keys = ["terminal", "a"]
-        batch = {
-            # e.g. for k='s' create tensor where each row is one state (e.g. dim 32x2)
-            k: torch.tensor(np.array([b[k] for b in batch_raw], dtype=np.float32)).to(
-                net.device
-            )
-            for k in set(batch_raw[0].keys()) - set(int_keys)
-        }
-        # 1 indicates a terminal state, 0 otherwise
-        for k in int_keys:  # int data types
-            batch[k] = torch.tensor(
-                np.array([int(b[k]) for b in batch_raw], dtype=np.int64)
-            ).to(net.device)
-
-        # compute target q values
-        target_qs = target_net(batch["next_s"]).to(net.device)
-        # max q value for each batch
-        # max_target_qs = target_qs.max(dim=1, keepdim=True)[0].to(net.device)
-        max_target_qs = target_qs.max(dim=1)[0].to(net.device)
-
-        # compute q learning targets (note for terminal states the future reward is zeroed)
-        # TODO: understand this better given targets are for (s,a) pair...
-        targets = (
-            (batch["r"] + gamma * (1.0 - batch["terminal"]) * max_target_qs)
-            .to(net.device)
-            .unsqueeze(-1)
-        )
-        predicted_qs = net(batch["s"]).to(net.device)
-        # get predicted q value of action taken in each episode
-        action_qs = torch.gather(
-            input=predicted_qs, dim=1, index=batch["a"].unsqueeze(-1)
-        ).to(net.device)
-
-        net.optimizer.zero_grad()
-        # TODO: understand how loss works better
-        loss = net.loss(action_qs, targets)
-        loss.backward()
-        net.optimizer.step()
-
-        i += 1
-
-
 if __name__ == "__main__":
     # sim = QLearn()
     # sim.visualize_qtable()
     # sim.run_episode()
 
     # direct_updates()
-    # strategy2b()
-
-    strategy3(
-        max_buffer=50000,
-        training_steps=int(5e6),
-        start_e=1.0,
-        num_measures=1500,
-        save_dir="tmp",
-    )
+    strategy2b()
