@@ -14,6 +14,9 @@ import random
 from typing import List, Tuple, Any, Optional, Union, MutableSet, Dict, Callable
 import json
 
+# from dqn import DQN
+import torch
+
 
 class Spot(Enum):
     EMPTY = 0
@@ -58,7 +61,7 @@ class QLearn:
         self.world[6, 5] = Spot.SNAKES.value
         self.world[-1, -1] = Spot.TREASURE.value
 
-    def init_q_table(self) -> None:
+    def init_q_table(self, net=None) -> None:
         # table = pd.DataFrame({"s_0": [], "s_1": [], "a": [], "r": [], "q": []})
         table = pd.DataFrame({"s": [], "a": [], "r": [], "q": []})
         self.world.shape
@@ -77,6 +80,11 @@ class QLearn:
                         q, r = 0, 50
                     elif self.world[next_s] == Spot.SNAKES.value:
                         r = -50
+
+                    if net is not None:
+                        # populate q value from DQN
+                        qvals = net(torch.tensor(s, dtype=torch.float32))
+                        q = qvals[a.value].item()
 
                     cur_row = {
                         "s": [s],
@@ -467,6 +475,8 @@ def strategy3(
     start_e: float = 1.0,
     end_e: float = 0.1,
     num_measures: int = 100,
+    replay_only: bool = False,
+    replay_draw: bool = False,  # draw measured episodes
 ):
     """
     Using a DQN.
@@ -476,7 +486,7 @@ def strategy3(
     import torch
 
     gamma = 0.99
-    #gamma = 2 / 3
+    # gamma = 2 / 3
     batch_size = 64
     epsilon = start_e
     C = 15000  # how often to update target_net
@@ -510,14 +520,31 @@ def strategy3(
     stats = {"step": [], "fitness": []}
 
     start_step = 0
+    reloaded = False
     if os.path.exists(model_path):
         print(f"reloaded network from '{model_path}'")
         net.load_state_dict(torch.load(model_path))
-    if os.path.exists(stats_path):
-        with open(stats_path, "r") as f:
-            stats = json.load(f)
-        start_step = int(stats["step"][-1]) + 1
-        print(f"reloaded stats from '{stats_path}' (start_step = {start_step})")
+        reloaded = True
+        if os.path.exists(stats_path):
+            with open(stats_path, "r") as f:
+                stats = json.load(f)
+            start_step = int(stats["step"][-1]) + 1
+            print(f"reloaded stats from '{stats_path}' (start_step = {start_step})")
+
+    if replay_only:
+        assert reloaded, f"failed to find model to reload: '{model_path}'"
+        print(f"replaying data from '{save_dir}'")
+        sim.visualize(
+            net, save_path=os.path.join(save_dir, f"qtable_step{start_step-1}.pdf")
+        )
+        trials = 10
+        if replay_draw:
+            score = sim.measure(net, trials=10, save_dir=save_dir)
+        else:
+            score = sim.measure(net, trials=25)
+        print(f"score =\n{score} (averaged over {trials} trials)")
+        print("replay done!")
+        exit(0)
 
     must_init = True
     for i in range(start_step, training_steps):
@@ -604,6 +631,10 @@ if __name__ == "__main__":
     # direct_updates()
     # strategy2b()
 
-    #strategy3(max_buffer=50000, training_steps=int(5e6), start_e=1.0, num_measures=1500)
-    strategy3(max_buffer=50000, training_steps=int(10000), start_e=1.0, num_measures=10, save_dir="tmp")
-# strategy3(max_buffer=10000, training_steps=int(5e6), start_e=0.5, save_dir="tmp")
+    strategy3(
+        max_buffer=50000,
+        training_steps=int(5e6),
+        start_e=1.0,
+        num_measures=1500,
+        save_dir="tmp",
+    )
