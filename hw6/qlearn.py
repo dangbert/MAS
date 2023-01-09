@@ -57,11 +57,14 @@ class QLearn:
         self.world[6, 5] = Spot.SNAKES.value
         self.world[-1, -1] = Spot.TREASURE.value
 
-    def init_q_table(self) -> None:
+    def init_q_table(self, net=None) -> None:
         # table = pd.DataFrame({"s_0": [], "s_1": [], "a": [], "r": [], "q": []})
         table = pd.DataFrame({"s": [], "a": [], "r": [], "q": []})
         self.world.shape
         rows, cols = self.world.shape
+
+        if net is not None:
+            import torch
 
         for row in range(rows):
             for col in range(cols):
@@ -77,12 +80,27 @@ class QLearn:
                     elif self.world[next_s] == Spot.SNAKES.value:
                         r = -50
 
+                    if net is not None:
+                        # populate q value from DQN
+                        qvals = net(torch.tensor(s, dtype=torch.float32))
+                        q = qvals[a.value].item()
+
                     cur_row = {"s": [s], "a": [a.value], "r": [r], "q": [q]}
                     # table = table.append(cur_row, ignore_index=True)
                     # table = pd.concat([table, pd.DataFrame(cur_row)], ignore_index=True)
                     table = pd.concat([table, pd.DataFrame(cur_row)], ignore_index=True)
         self.qtable = table
         return table
+
+    def get_initial_state(self):
+        """Get random initial (non-terminal) state e.g. (1,2)"""
+        s0 = None
+        while s0 is None or Spot(self.world[s0]) != Spot.EMPTY:
+            s0 = (
+                random.randint(0, self.world.shape[0] - 1),
+                random.randint(0, self.world.shape[1] - 1),
+            )
+        return s0
 
     def run_episode(
         self,
@@ -112,12 +130,7 @@ class QLearn:
         """
         assert 0.0 <= epsilon <= 1.0
 
-        # get random initial (non-terminal) state e.g. (0,0)
-        while s0 is None or Spot(self.world[s0]) != Spot.EMPTY:
-            s0 = (
-                random.randint(0, self.world.shape[0] - 1),
-                random.randint(0, self.world.shape[1] - 1),
-            )
+        s0 = self.get_initial_state() if s0 is None else s0
 
         def epsilon_greedy(rows: pd.DataFrame, epsilon: float) -> int:
             """Do epsilon greedy action selection, returning the index of the selected row (from a subset of the qtable)."""
@@ -153,7 +166,13 @@ class QLearn:
 
             rewards.append(cur_row["r"])
             history.append(
-                {"s": s, "a": cur_row["a"], "r": next_row["r"], "next_s": next_s}
+                {
+                    "s": s,
+                    "a": cur_row["a"],
+                    "r": next_row["r"],
+                    "next_s": next_s,
+                    "terminal": self.world[next_s] == Spot.TREASURE.value,
+                }
             )
             if save_dir:
                 self.visualize_qtable(
@@ -207,7 +226,7 @@ class QLearn:
     def apply_action(self, s: Loc, a: Union[Action, float]) -> Loc:
         """
         Returns location of new state after action.
-        Next state may be the same as the previous state (e.g. bumpted into wall).
+        Next state may be the same as the previous state (e.g. bumped into wall).
         """
         a = Action(a)  # ensure type(a) == Action
         if a == Action.UP:
@@ -444,16 +463,9 @@ def strategy2b(max_buffer: int = 5000, max_replays: int = 10000):
 
 
 if __name__ == "__main__":
-    sim = QLearn()
+    # sim = QLearn()
     # sim.visualize_qtable()
     # sim.run_episode()
 
-    direct_updates()
-    # strategy2b()
-    # build buffer of experiences
-    # _, buffer = sim.run_episode(alpha=0, max_steps=50)
-    # print(f"collected {len(buffer)} experiences to sample from.")
-    # sim.replay_experience(buffer[0])
-
-    pdb.set_trace()
-    exit(0)
+    # direct_updates()
+    strategy2b()
