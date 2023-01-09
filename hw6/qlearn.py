@@ -475,11 +475,11 @@ def strategy3(
     from dqn import DQN, DQAgent
     import torch
 
-    # gamma = 0.99
-    gamma = 2 / 3
-    batch_size = 32
+    gamma = 0.99
+    #gamma = 2 / 3
+    batch_size = 64
     epsilon = start_e
-    C = 5000  # how often to update target_net
+    C = 15000  # how often to update target_net
 
     sim = DQAgent()
 
@@ -505,6 +505,7 @@ def strategy3(
 
     # maps (x,y) positions to Q values for each possible action
     net = DQN(2, len(Action))
+    print(f"device = {net.device}")
     target_net = DQN(2, len(Action))
     stats = {"step": [], "fitness": []}
 
@@ -533,7 +534,7 @@ def strategy3(
 
         if i % int(training_steps / num_measures) == 0:
             stats["step"].append(i)
-            stats["fitness"].append(sim.measure(net))
+            stats["fitness"].append(sim.measure(net, trials=25))
             plot_stats(stats, save_path=graph_path)
             torch.save(net.state_dict(), model_path)
             with open(stats_path, "w") as f:
@@ -603,5 +604,6 @@ if __name__ == "__main__":
     # direct_updates()
     # strategy2b()
 
-    strategy3(max_buffer=50000, training_steps=int(5e6), start_e=0.5, num_measures=1000)
+    #strategy3(max_buffer=50000, training_steps=int(5e6), start_e=1.0, num_measures=1500)
+    strategy3(max_buffer=50000, training_steps=int(10000), start_e=1.0, num_measures=10, save_dir="tmp")
 # strategy3(max_buffer=10000, training_steps=int(5e6), start_e=0.5, save_dir="tmp")

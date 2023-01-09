@@ -18,7 +18,7 @@ class DQN(nn.Module):
     loss: Any
     optim: optim.Optimizer
 
-    def __init__(self, input_len: int, output_len: int, lr: float = 25e-5):
+    def __init__(self, input_len: int, output_len: int, lr: float = 0.0025):
         """
         Note for LM project, there are 8 IRs so input_len could be 8.
         Inspired by:
