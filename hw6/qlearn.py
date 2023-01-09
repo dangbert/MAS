@@ -89,6 +89,16 @@ class QLearn:
         self.qtable = table
         return table
 
+    def get_initial_state(self):
+        """Get random initial (non-terminal) state e.g. (1,2)"""
+        s0 = None
+        while s0 is None or Spot(self.world[s0]) != Spot.EMPTY:
+            s0 = (
+                random.randint(0, self.world.shape[0] - 1),
+                random.randint(0, self.world.shape[1] - 1),
+            )
+        return s0
+
     def run_episode(
         self,
         s0: Optional[Loc] = None,
@@ -117,12 +127,7 @@ class QLearn:
         """
         assert 0.0 <= epsilon <= 1.0
 
-        # get random initial (non-terminal) state e.g. (0,0)
-        while s0 is None or Spot(self.world[s0]) != Spot.EMPTY:
-            s0 = (
-                random.randint(0, self.world.shape[0] - 1),
-                random.randint(0, self.world.shape[1] - 1),
-            )
+        s0 = self.get_initial_state() if s0 is None else s0
 
         def epsilon_greedy(rows: pd.DataFrame, epsilon: float) -> int:
             """Do epsilon greedy action selection, returning the index of the selected row (from a subset of the qtable)."""
@@ -218,7 +223,7 @@ class QLearn:
     def apply_action(self, s: Loc, a: Union[Action, float]) -> Loc:
         """
         Returns location of new state after action.
-        Next state may be the same as the previous state (e.g. bumpted into wall).
+        Next state may be the same as the previous state (e.g. bumped into wall).
         """
         a = Action(a)  # ensure type(a) == Action
         if a == Action.UP:
@@ -454,12 +459,14 @@ def strategy2b(max_buffer: int = 5000, max_replays: int = 10000):
     sim.visualize_qtable(title=f"Q Table After {max_replays} Replay Steps")
 
 
-def strategy3(max_buffer: int = 10000, training_steps: int = 20000):
+def strategy3(
+    max_buffer: int = 10000, training_steps: int = 20000, save_dir: str = "dqn_output"
+):
     """
     Using a DQN.
     see dqn.py for reference links.
     """
-    from dqn import DQN
+    from dqn import DQN, DQAgent
     import torch
 
     # gamma = 0.99
@@ -469,28 +476,58 @@ def strategy3(max_buffer: int = 10000, training_steps: int = 20000):
     epsilon = start_e
     C = 500  # how often to update target_net
 
-    sim = QLearn()
+    sim = DQAgent()
 
-    # build initial experience buffer
-    buffer = []
-    while len(buffer) < max_buffer:
-        # we use a high epsilon for experience collection to encourage trying a diverse set of actions
-        history = sim.run_episode(alpha=0, epsilon=start_e, max_steps=2000)[1]
-        buffer.extend(history)
-    buffer = buffer[:max_buffer]
+    buffer = []  # experience buffer
+    stats = {"step": [], "fitness": []}
+
+    model_path = os.path.join(save_dir, "model.pth")
+    stats_path = os.path.join(save_dir, "training.pdf")
+    if not os.path.isdir(save_dir):
+        os.makedirs(save_dir)
+    print(f"will save to '{save_dir}'")
+
+    def plot_stats(stats, save_path: str = ""):
+        plt.clf()
+        plt.title(f"Average Reward of Policy Throughout Training")
+        plt.plot(stats["step"], stats["fitness"])
+        plt.xlabel("Training Step")
+        plt.ylabel("Average Reward (per move)")
+        if save_path:
+            print("wrote")
+            plt.savefig(save_path)
+        else:
+            plt.show()
 
     # maps (x,y) positions to Q values for each possible action
     net = DQN(2, len(Action))
     target_net = DQN(2, len(Action))
-    target_net.load_state_dict(net.state_dict())
     for i in range(0, training_steps):
         if i % C == 0:
+            # update target_net (on first iteration and every C iterations after)
             target_net.load_state_dict(net.state_dict())
-            # print(f"epsilon = {epsilon:.3f}")
-            # target_net = copy.deepcopy(net)
 
         # anneal e from start_e -> end_e
+        #   (initialy using a high epsilon for experience collection to encourage trying a diverse set of actions)
         epsilon = start_e - (i / training_steps) * (start_e - end_e)
+        # print(f"epsilon = {epsilon:.3f}")
+
+        if i % int(training_steps / 50) == 0:
+            stats["step"].append(i)
+            stats["fitness"].append(sim.measure(net))
+            plot_stats(stats, save_path=stats_path)
+            torch.save(net.state_dict(), model_path)
+            print(
+                f"training step {i}/{training_steps}: avg_reward = {stats['fitness'][-1]:.3f}"
+            )
+
+        # (conditionally) update memory buffer with newer experiences
+        if i % 1000 == 0:
+            buffer = buffer[1000:]
+        while len(buffer) < max_buffer:
+            history = sim.run_episode(net, epsilon=epsilon, max_steps=2000)[1]
+            buffer.extend(history)
+        buffer = buffer[:max_buffer]
 
         # get batch of experiences
         batch_raw = np.random.choice(buffer, batch_size, replace=False)
@@ -531,7 +568,6 @@ def strategy3(max_buffer: int = 10000, training_steps: int = 20000):
         loss.backward()
         net.optimizer.step()
 
-        pdb.set_trace()
         i += 1
 
 
