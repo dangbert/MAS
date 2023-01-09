@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import pdb
 import random
 from typing import List, Tuple, Any, Optional, Union, MutableSet, Dict, Callable
+import json
 
 
 class Spot(Enum):
@@ -460,7 +461,12 @@ def strategy2b(max_buffer: int = 5000, max_replays: int = 10000):
 
 
 def strategy3(
-    max_buffer: int = 10000, training_steps: int = 20000, save_dir: str = "dqn_output"
+    max_buffer: int = 50000,
+    training_steps: int = int(1e9),
+    save_dir: str = "dqn_output",
+    start_e: float = 1.0,
+    end_e: float = 0.1,
+    num_measures: int = 100,
 ):
     """
     Using a DQN.
@@ -472,17 +478,16 @@ def strategy3(
     # gamma = 0.99
     gamma = 2 / 3
     batch_size = 32
-    start_e, end_e = 1.0, 0.1
     epsilon = start_e
-    C = 500  # how often to update target_net
+    C = 5000  # how often to update target_net
 
     sim = DQAgent()
 
     buffer = []  # experience buffer
-    stats = {"step": [], "fitness": []}
 
     model_path = os.path.join(save_dir, "model.pth")
-    stats_path = os.path.join(save_dir, "training.pdf")
+    graph_path = os.path.join(save_dir, "training.pdf")
+    stats_path = os.path.join(save_dir, "stats.json")
     if not os.path.isdir(save_dir):
         os.makedirs(save_dir)
     print(f"will save to '{save_dir}'")
@@ -494,7 +499,6 @@ def strategy3(
         plt.xlabel("Training Step")
         plt.ylabel("Average Reward (per move)")
         if save_path:
-            print("wrote")
             plt.savefig(save_path)
         else:
             plt.show()
@@ -502,28 +506,46 @@ def strategy3(
     # maps (x,y) positions to Q values for each possible action
     net = DQN(2, len(Action))
     target_net = DQN(2, len(Action))
-    for i in range(0, training_steps):
-        if i % C == 0:
+    stats = {"step": [], "fitness": []}
+
+    start_step = 0
+    if os.path.exists(model_path):
+        print(f"reloaded network from '{model_path}'")
+        net.load_state_dict(torch.load(model_path))
+    if os.path.exists(stats_path):
+        with open(stats_path, "r") as f:
+            stats = json.load(f)
+        start_step = int(stats["step"][-1]) + 1
+        print(f"reloaded stats from '{stats_path}' (start_step = {start_step})")
+
+    must_init = True
+    for i in range(start_step, training_steps):
+        if must_init or i % C == 0:
+            print("updating target_net")
             # update target_net (on first iteration and every C iterations after)
             target_net.load_state_dict(net.state_dict())
+            must_init = False
 
         # anneal e from start_e -> end_e
         #   (initialy using a high epsilon for experience collection to encourage trying a diverse set of actions)
         epsilon = start_e - (i / training_steps) * (start_e - end_e)
         # print(f"epsilon = {epsilon:.3f}")
 
-        if i % int(training_steps / 50) == 0:
+        if i % int(training_steps / num_measures) == 0:
             stats["step"].append(i)
             stats["fitness"].append(sim.measure(net))
-            plot_stats(stats, save_path=stats_path)
+            plot_stats(stats, save_path=graph_path)
             torch.save(net.state_dict(), model_path)
+            with open(stats_path, "w") as f:
+                json.dump(stats, f, indent=2)
+
             print(
-                f"training step {i}/{training_steps}: avg_reward = {stats['fitness'][-1]:.3f}"
+                f"training step {i}/{training_steps} ({(100 * i / training_steps):.3f}%): avg_reward = {stats['fitness'][-1]:.3f}, epsilon={epsilon:.3f}"
             )
 
         # (conditionally) update memory buffer with newer experiences
-        if i % 1000 == 0:
-            buffer = buffer[1000:]
+        if i % 5000 == 0:
+            buffer = buffer[5000:]
         while len(buffer) < max_buffer:
             history = sim.run_episode(net, epsilon=epsilon, max_steps=2000)[1]
             buffer.extend(history)
@@ -553,8 +575,10 @@ def strategy3(
 
         # compute q learning targets (note for terminal states the future reward is zeroed)
         # TODO: understand this better given targets are for (s,a) pair...
-        targets = (batch["r"] + gamma * (1.0 - batch["terminal"]) * max_target_qs).to(
-            net.device
+        targets = (
+            (batch["r"] + gamma * (1.0 - batch["terminal"]) * max_target_qs)
+            .to(net.device)
+            .unsqueeze(-1)
         )
         predicted_qs = net(batch["s"]).to(net.device)
         # get predicted q value of action taken in each episode
@@ -579,7 +603,5 @@ if __name__ == "__main__":
     # direct_updates()
     # strategy2b()
 
-    strategy3(max_buffer=1000)
-
-    pdb.set_trace()
-    exit(0)
+    strategy3(max_buffer=50000, training_steps=int(5e6), start_e=0.5, num_measures=1000)
+# strategy3(max_buffer=10000, training_steps=int(5e6), start_e=0.5, save_dir="tmp")
